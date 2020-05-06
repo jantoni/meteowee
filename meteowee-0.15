@@ -1,0 +1,456 @@
+
+#!/bin/bash
+
+# METEOWEE 0.15-2
+
+#####################################################################################################
+# Variables a declarar. Modifica estas variables. De lo contrario utilizará los valores por defecto #
+#####################################################################################################
+
+# Variables obligatorias a declarar
+
+DIR='/home/pi'			      # Directorio de instalación por defecto. Modifícalo si sabes lo que haces. En Raspbian es /home/pi en otros sistemas será distinto en función del nombre de usuario por defecto
+NOMBREHOST='Meteo-Raspi'      # Nombre que quieres dar al ordenador. Será identificado con este nombre en la red.
+UPDATEOS=0				      # Actualizar todo el sistema operativo. 0=NO   1=SI . Esto alarga mucho el tiempo de ejecución del script. Por defecto 0
+
+
+# Variables de Weewx por defecto. Modifícalos si sabes lo que estás haciendo
+
+CONFIG_FILE='/etc/weewx/weewx.conf'							# Fichero de configuración de weewx.
+SKIN_DIR='/etc/weewx/skins/Seasons'							# Directorio del skin. Por defecto el skin es Seasons
+SKIN_CONFIG_FILE='/etc/weewx/skins/Seasons/skin.conf'		# Fichero de configuracion del skin
+
+
+# Variables para Meteoclimatic
+
+METEOCLIMATIC_COD=''			# Código de estación en Meteoclimatic
+METEOCLIMATIC_SIG=''	# Password de Meteoclimatic
+
+INSTALAR_RUTINA_ENVIO=1							# 1 para instalar la utilidad de envío con Python. Cualquier otro número para no instalar esta rutina de envío.
+												# Si vas a enviar la plantilla mediante la URL de tu página web indica 0
+
+												
+# Variables que no es necesario cambiar y que es mejor que no cambies si no sabes lo que haces
+
+APACHE_INSTALL=1		      # 0 No instalar Apache2, 1 instalar Apache2
+WEELOGPER='daily'		      # Periodicidad de rotación del log de Weewx. Por defecto es daily (diario), puedes establecer weekly (semanal)
+WEELOGMAX=2				      # Numero máximo de rotaciones del log de Weewx. Por defecto 2.
+APACHE2LOGSIZE='20m'	      # Tamaño máximo en Megabytes del log para Apache en RAM. Tras el número debe seguir la m minuscula. Por defecto 20m
+WEEWXLOGSIZE='20m'		      # Tamaño máximo en Megabytes del log para Weewx en RAM. Tras el número debe seguir la m minuscula. Por defecto 20m
+PYTHONVER=3                   # Indicar la versión de Python a utilizar. Por defecto es la 3. Otra opción es la 2
+
+
+#############################################
+# Variables que todavía no están operativas #
+#############################################
+
+Instalarchecknet=0      # Checknet es un script para comprobar la red, reinicia el servicio networking o incluso el ordenador
+                        # Para instalar checknet deberás crear un grupo de Telegram para recibir los avisos correspondientes.
+						# También deberás crear un bot de Telegram (con el bot BotFather e incluir al nuevo bot como administrador en el grupo creado
+						# El id de grupo y la Key del bot debes incluirlos en el archivo telegram que encontrarás en el directorio indicado en la variable Dir
+						# Sigue las instrucciones que verás en https://blog.angelinux-slack.net/2017/01/10/usar-un-bot-de-telegram-para-enviar-mensajes-en-nuestros-sistemas-con-php-bash-y-python/
+USERID="-id"     # Identificación del grupo Telegram creado para recibir notificaciones
+KEY="key"     # Key del bot que mandará las notificaciones
+
+
+###################################
+# FIN DE DECLARACION DE VARIABLES #
+###################################
+
+
+
+#####################
+# INICIO DEL SCRIPT #
+#####################
+
+clear
+echo "Empezamos"
+date
+
+
+###################################################################################
+# Definimos los repositorios de Weewx para instalación con apt en sistemas Debian #
+###################################################################################
+
+wget -qO - http://weewx.com/keys.html | sudo apt-key add -
+
+if [ $PYTHONVER = 3 ]
+	then
+		wget -qO - http://weewx.com/apt/weewx-python3.list | sudo tee /etc/apt/sources.list.d/weewx.list
+	else
+		wget -qO - http://weewx.com/apt/weewx-python2.list | sudo tee /etc/apt/sources.list.d/weewx.list
+fi
+
+
+###############################################
+# Actualizamos el sistema. Un dolor de muelas #
+###############################################
+
+echo
+date
+echo
+echo "Actualizamos la lista de paquetes"
+echo "================================="
+apt-get update >> /dev/null
+date
+
+if [ $UPDATEOS = 1 ]
+	then
+    echo "Actualizando los paquetes del sistema operativo"
+	echo "==============================================="
+	apt-get upgrade --yes >> /dev/null
+	date
+fi
+
+
+#####################################################################
+# Vamos al directorio de instalación establecido en la variable DIR #
+#####################################################################
+
+cd $DIR
+
+
+##############################
+# Cambiamos la zona horaria. #
+##############################
+
+echo "Cambiando la zona horaria"
+echo "========================="
+# Esta linea es para hora UTC
+sudo ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+# Esta linea para para hora CET (Central Europe Time)
+#sudo ln -fs /usr/share/zoneinfo/CET /etc/localtime
+# Esta linea para hora oficial de España Peninsular
+#sudo ln -fs /usr/share/zoneinfo/Europe/Madrid /etc/localtime
+# Esta linea para hora oficial de Canarias y Portugal
+#sudo ln -fs /usr/share/zoneinfo/Portugal /etc/localtime
+dpkg-reconfigure -f noninteractive tzdata
+
+
+############################################################################################################################
+# Mejoramos la supervivencia de la tarjeta SD mediante log en RAM y suprimiendo control de acceso a ficheros y directorios #
+############################################################################################################################
+
+echo "Creando un disco de 20 MBytes en RAM para hacer el log en la RAM"
+echo "================================================================"
+echo " " >> /etc/fstab
+echo "tmpfs   /var/log    tmpfs    defaults,noatime,nosuid,mode=0755,size=$WEEWXLOGSIZE    0 0" >> /etc/fstab
+if [ $APACHE_INSTALL = 1 ]
+	then
+	echo "Creando un disco de 20 MBytes en RAM para hacer el log de Apache2 en la RAM"
+	echo "tmpfs   /var/log/apache2    tmpfs    defaults,noatime,nosuid,mode=0755,size=$APACHE2LOGSIZE    0 0" >> /etc/fstab
+fi
+echo "Eliminando el registro de acceso a ficheros y directorios. Esto alagará mucho la vida de la SD"
+echo "=============================================================================================="
+sed -i 's/noatime/noatime,nodiratime/g' "/etc/fstab"
+
+
+###############################################################
+# Eliminamos el swaping para alargar la vida de la tarjeta SD #
+###############################################################
+
+echo
+echo "Inhabilitando el swaping para alargar la vida de la SD"
+echo "======================================================"
+swapoff --all
+
+
+########################################################
+# Desinstalamos el falso reloj y el sistema de swaping #
+########################################################
+
+echo
+date
+echo
+echo "Eliminando el falso reloj y el sistema de swaping"
+echo "================================================="
+apt-get purge --yes fake-hwclock dphys-swapfile >> /dev/null
+
+
+#################################################################
+# Mas dificil todavia. Generamos el locale spanish si no existe #
+#################################################################
+
+echo
+date
+echo "Generamos el locale spanish si no existe"
+echo "========================================"
+sed -i 's/# es_ES.UTF-8/es_ES.UTF-8/g' /etc/locale.gen
+/usr/sbin/locale-gen
+echo -e "LANG=\"es_ES.UTF-8\"\nLANGUAGE=\"es_ES.UTF-8\"\nLC_ALL=\"es_ES.UTF-8\"" | sudo tee -a /etc/environment > /dev/null
+echo
+date
+echo
+
+
+#####################################################
+# Establecemos la versión 3.7 por defecto de Python #
+#####################################################
+
+update-alternatives --install /usr/bin/python python /usr/bin/python2.7 1
+update-alternatives --install /usr/bin/python python /usr/bin/python3.7 2
+
+
+############################################
+# Instalamos el software adicional a Weewx #
+############################################
+
+echo
+date
+echo
+echo "Antes de instalar WeeWX, instalamos el sofware adicional que nos hace falta"
+echo "==========================================================================="
+echo
+echo "Instalando librerias y programas necesarios. Puede tardar hasta 15 minutos. Paciencia"
+echo "====================================================================================="
+
+apt-get install --yes xrdp ntp libimagequant0 libjbig0 liblcms2-2 libtiff5 libwebp6 libwebpdemux2 libwebpmux3 >> /dev/null
+apt-get install --yes python3-configobj python3-cheetah python3-dev python3-ephem python3-pil python3-serial python3-usb python3-pip python3-olefile python3-six >> /dev/null
+apt-get install --yes sqlite ftp rsync >> /dev/null
+
+if [ $APACHE_INSTALL = 1 ]
+	then
+    date
+	echo "Instalando Servidor Web Apache2 y otros paquetes adicionales"
+	echo "============================================================"
+	apt-get install --yes apache2 php7.3 >> /dev/null
+	date
+fi
+
+
+######################################################
+# Instalamos Weewx mediante el repositorio de Debian #
+######################################################
+
+echo
+date
+echo
+echo "Instalamos WeeWX desde el repositorio oficial"
+echo "============================================="
+apt-get install weewx
+
+
+###############################################################################################################################
+# Paramos Weewx para realizar modificaciones en la configuración                                                              #
+# Este paso no es necesario puesto que se puede modificar /etc/weewx/weewx.conf y luego recargar con /etc/init.d/weewx reload #
+###############################################################################################################################
+
+echo
+date
+echo
+echo "Parando el servidor de WeeWX"
+echo "============================"
+/etc/init.d/weewx stop
+echo
+
+
+###########################################################################################################
+# Modificamos el sistema de log para que Weewx tenga su propio log y no mezclado con el resto del sistema #
+###########################################################################################################
+
+echo
+date
+echo
+echo "Modificando el sistema de Log para que WeeWX tenga su propio log diferenciado"
+echo "============================================================================="
+echo ":programname,startswith,\"weewx\"" /var/log/weewx.log | sudo tee -a /etc/rsyslog.d/99-weewx.conf > /dev/null
+echo ":programname,startswith,\"weewx\"" \~\ | sudo tee -a /etc/rsyslog.d/99-weewx.conf > /dev/null
+
+
+################################################################################################################
+# Establecemos que Weewx tenga un log dentro de logrotate para evitar ficheros que nos consuman la RAM o la SD #
+# Se estable rotacion diaria y el numero maximo de rotaciones en 2
+################################################################################################################
+
+echo
+echo "Estableciendo la rotación de log para WeeWX"
+echo "==========================================="
+echo -e "/var/log/weewx.log {\n  $WEELOGPER\n  missingok\n  rotate $WEELOGMAX\n  compress\n  delaycompress\n  notifempty\n  sharedscripts\n  postrotate\n  /etc/init.d/rsyslog stop\n  /etc/init.d/rsyslog start\n  endscript\n}" | sudo tee -a /etc/logrotate.d/weewx > /dev/null
+echo "reiniciando el sistema de log"
+echo "============================="
+service rsyslog restart
+
+
+########################################################################################
+# Cambiamos en Weewx el dia de comienzo de semana. Ponemos lunes                       #
+# Buscamos week_start = 6 y lo sustituimos por week_start = 0 en /etc/weewx/weewx.conf #
+########################################################################################
+
+echo
+echo "Estableciendo el Lunes como primer dia de la semana en WeeWX"
+echo "============================================================"
+sed -i 's/week_start = 6/week_start = 0/g' "$CONFIG_FILE"
+
+
+#############################################################################################################
+# Cambiamos Weewx.conf para que las unidades sean en metrica y ademas mm en lugar de cm y km/h en lugar m/s #
+#                                                                                                           #
+# Todo: incluir también para unidades imperiales, de tal modo que lo cambie a métrica independientemente de #
+# lo que se indique en la instalacion. Hay que incluir una linea por ubicación                              #
+#                                                                                                           #
+#############################################################################################################
+
+echo
+echo "Estableciendo unidades en métrica, milimetros en lugar de centimetros y Kmh en lugar de ms/s"
+echo "Esto no modifica la base de datos. La base de datos seguirá en unidades imperiales"
+echo "============================================================================================"
+sed -i 's/group_speed = meter_per_second/group_speed = km_per_hour/g' "$CONFIG_FILE"
+sed -i 's/group_speed2 = meter_per_second2/group_speed2 = km_per_hour2/g' "$CONFIG_FILE"
+sed -i 's/group_pressure = mbar/group_pressure = hPa/g' "$CONFIG_FILE"
+sed -i 's/group_rain = cm/group_rain = mm/g' "$CONFIG_FILE"
+sed -i 's/group_rainrate = cm_per_hour/group_rainrate = mm_per_hour/g' "$CONFIG_FILE"
+
+
+##################################################
+# Cambiamos el formato de las horas y las fechas #
+##################################################
+
+echo
+echo "Cambiando el formato de fechas y horas"
+echo "======================================"
+sed -i 's/day        = %X/day        = %H:%M/g' "$CONFIG_FILE"
+sed -i 's/week       = %X (%A)/week       = %H:%M on %A/g' "$CONFIG_FILE"
+sed -i 's/month      = %x %X/month      = %d-%b-%Y %H:%M/g' "$CONFIG_FILE"
+sed -i 's/year       = %x %X/year       = %d-%b-%Y %H:%M/g' "$CONFIG_FILE"
+sed -i 's/rainyear   = %x %X/rainyear   = %d-%b-%Y %H:%M/g' "$CONFIG_FILE"
+sed -i 's/current    = %x %X/current    = %d-%b-%Y %H:%M/g' "$CONFIG_FILE"
+sed -i 's/ephem_day  = %X/ephem_day  = %H:%M/g' "$CONFIG_FILE"
+sed -i 's/ephem_year = %x %X/ephem_year = %d-%b-%Y %H:%M/g' "$CONFIG_FILE"
+
+
+#################
+# Meteoclimatic #
+#################
+
+############################################################################
+# Rellena la plantilla Meteoclimatic en el directorio del skin por defecto #
+############################################################################
+
+cat <<EOF >> $SKIN_DIR/meteoclimatic.html.tmpl
+*VER=DATA2
+*COD=$METEOCLIMATIC_COD
+*SIG=$METEOCLIMATIC_SIG
+*UPD=\$current.dateTime.format("%d-%m-%Y %H:%M")
+*TMP=\$current.outTemp.formatted
+*WND=\$current.windSpeed.formatted
+*AZI=\$current.windDir.formatted
+*BAR=\$current.barometer.formatted
+*HUM=\$current.outHumidity.formatted
+*SUN=\$current.radiation.formatted
+*UVI=\$current.UV.formatted
+*DHTM=\$day.outTemp.max.formatted
+*DLTM=\$day.outTemp.min.formatted
+*DHHM=\$day.outHumidity.max.formatted
+*DLHM=\$day.outHumidity.min.formatted
+*DHBR=\$day.barometer.max.formatted
+*DLBR=\$day.barometer.min.formatted
+*DGST=\$day.windGust.max.formatted
+*DSUN=\$day.radiation.max.formatted
+*DHUV=\$day.UV.max.formatted
+*DPCP=\$day.rain.sum.formatted
+*WRUN=
+*MHTM=\$month.outTemp.max.formatted
+*MLTM=\$month.outTemp.min.formatted
+*MHHM=\$month.outHumidity.max.formatted
+*MLHM=\$month.outHumidity.min.formatted
+*MHBR=\$month.barometer.max.formatted
+*MLBR=\$month.barometer.min.formatted
+*MGST=\$month.windGust.max.formatted
+*MSUN=\$month.radiation.max.formatted
+*MHUV=\$month.UV.max.formatted
+*MPCP=\$month.rain.sum.formatted
+*YHTM=\$year.outTemp.max.formatted
+*YLTM=\$year.outTemp.min.formatted
+*YHHM=\$year.outHumidity.max.formatted
+*YLHM=\$year.outHumidity.min.formatted
+*YHBR=\$year.barometer.max.formatted
+*YLBR=\$year.barometer.min.formatted
+*YGST=\$year.windGust.max.formatted
+*YSUN=\$year.radiation.max.formatted
+*YHUV=\$year.UV.max.formatted
+*YPCP=\$year.rain.sum.formatted
+*EOT*
+EOF
+
+
+#####################################
+# Activa la plantilla Meteoclimatic #
+#####################################
+
+# Sustituimos la cadena rss-xml.tmpl por otra que además, añade las líneas de activición de la plantilla Meteoclimatic
+
+sed -i 's/rss.xml.tmpl/rss.xml.tmpl\n        [[[Meteoclimatic]]]\n        template = meteoclimatic.html.tmpl\n/g' "$SKIN_CONFIG_FILE"
+
+
+######################################################
+# Descargar rutina de envío de datos a Meteoclimatic #
+# y modificar crontab para su envio periódico        #
+######################################################
+
+if [ $INSTALAR_RUTINA_ENVIO = 1 ]
+	then
+	wget https://raw.githubusercontent.com/jantoni/meteowee/master/star_meteoclimatic/meteoclimatic.ini
+	wget https://raw.githubusercontent.com/jantoni/meteowee/master/star_meteoclimatic/meteoclimatic.py
+	cp meteoclimatic.ini /etc/weewx
+	cp meteoclimatic.py /etc/weewx
+	chmod +x /etc/weewx/meteoclimatic.py
+	##### escribir password en meteoclimatic.ini
+	sed -i "s/Password=/Password=$METEOCLIMATIC_SIG/g" "/etc/weewx/meteoclimatic.ini"
+		
+	# Añade línea en /etc/crontab para el envío de datos a Meteoclimatic cada 5 minutos.
+	cat <<EOF >> /etc/crontab
+
+# Envía datos a Meteoclimatic cada 5 minutos, empezando en el minuto 1 de cada hora
+1-59/5 *   * * *   root    /etc/weewx/meteoclimatic.py
+EOF
+
+fi
+
+
+###############################################################################################
+# Esto es todo. Reiniciamos, haciendo antes un sync de los datos al disco. Malas experiencias #
+###############################################################################################
+echo "Proceso finalizado"
+echo "=================="
+date
+echo "Reiniciando"
+echo "==========="
+sync
+reboot
+
+
+
+
+
+#############################
+# Para desarrollo posterior #
+#############################
+
+
+
+
+############################################
+# Incluir las modificaciones en StdRESTful #
+# Envio a diferentes redes meteorológicas  #
+############################################
+
+
+
+
+
+#################################################################################
+# Identificar o preguntar por la plataforma Raspberry Pi, Orange Pi, Odroid, PC #
+#################################################################################
+
+
+
+
+#############################################################################
+# ToDo insertar las variables de lenguaje en el script de arranque de weewx #
+#############################################################################
+
+
+
+#############################################################################################################
+# Se establecen los datos necesarios para subir datos a diferentes plataformas y a nuestro servidor Web     #
+#############################################################################################################
