@@ -16,7 +16,7 @@ direccion_de_envio = "emailqueenvia"  # Dirección de email que envía el correo
 password = "contraseña"  # Contraseña
 direccion_a_enviar = "emailalqueseenvía"  # Dirección de correo al que llegará el correo, puede ser la misma que envía
 fallos_envio = 5 # Número de plantillas no actualizadas al día en el cual se enviará un correo
-test_correo = False  # Poner a True para probar el correo ejecutando el script manualmente
+test_correo = False  # Poner a True para probar el correo ejecutando el script manualmente. Poner MANDAR_CORREO = True para la prueba.
 
 """
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -149,8 +149,8 @@ values = {}
 
 for i in inicont:
 	if '=' in i:
-		valor = i.strip().split('=')
-		values[valor[0]] = valor[1]
+		valor = i.split('=')
+		values[valor[0].strip()] = valor[1].strip()
 
 ruta = values['Path']
 
@@ -179,9 +179,7 @@ for i in plantilla:
 		valor = i.strip().replace(',','.').split('=')
 		valores[valor[0]] = valor[1]
 
-fecha = valores['UPD']
-
-fecha.replace('/', '-')
+fecha = valores['UPD'].replace('/', '-')
 
 fechaanho = (fecha.split(' ')[0]).split('-')[2]
 
